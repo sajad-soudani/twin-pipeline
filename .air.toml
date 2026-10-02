@@ -10,8 +10,8 @@ tmp_dir = "tmp"
   bin = "./tmp/main"
   cmd = "go build -o ./tmp/main ./cmd/server/main.go"
   delay = 1000
-  entrypoint = ["./tmp/main"]
-  exclude_dir = ["assets", "tmp", "vendor", "testdata"]
+  entrypoint = ["./tmp/simulator", "./tmp/main"]
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "cmd/simulator"]
   exclude_file = []
   exclude_regex = ["_test.go"]
   exclude_unchanged = false
@@ -31,6 +31,12 @@ tmp_dir = "tmp"
   rerun_delay = 500
   send_interrupt = false
   stop_on_error = false
+
+[[build.rules]]
+name = "simulator"
+include_dir = ["cmd/simulator"]
+include_ext = ["go"]
+cmd = "go build -o ./tmp/simulator ./cmd/simulator/main.go"
 
 [color]
   app = ""
@@ -55,5 +61,5 @@ tmp_dir = "tmp"
   proxy_port = 0
 
 [screen]
-  clear_on_rebuild = false
+  clear_on_rebuild = true
   keep_scroll = true
