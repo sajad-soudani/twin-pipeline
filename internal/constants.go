@@ -3,7 +3,8 @@ package internal
 const (
 	TopicStatus                   = "twin/status"
 	TopicData                     = "twin/sensors"
-	TopicEngine                   = "twin/sensors/engine/#"
+	TopicEngine                   = "twin/sensors/engine"
+	TopicEngineAll                = "twin/sensors/engine/#"
 	TopicEngineExhaustTemperature = TopicEngine + "/exhaust-temp"
 	TopicEngineVibration          = TopicEngine + "/vibration"
 	TopicEngineRPM                = TopicEngine + "/rpm"

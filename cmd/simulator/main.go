@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
@@ -18,7 +19,8 @@ import (
 )
 
 const (
-	tickerDelay = 2 * time.Second
+	tickerDelay = time.Second
+	assetsCount = 50
 )
 
 type SensorGenerator struct {
@@ -165,8 +167,6 @@ func main() {
 	ticker := time.NewTicker(tickerDelay)
 	defer ticker.Stop()
 
-	n := 0
-
 	assetID := "engine"
 
 	sensors := make(map[string]*SensorGenerator, len(DieselGeneratorSensors))
@@ -180,9 +180,11 @@ loop:
 	for {
 		select {
 		case <-ticker.C:
-			n++
-			for k, v := range sensors {
-				go publish(cmCtx, cm, assetID, k, v, expiry)
+			for i := range assetsCount {
+				for k, v := range sensors {
+					slog.Debug(fmt.Sprintf("#%d for: \" %s \"", i, k))
+					go publish(cmCtx, cm, assetID, k, v, expiry)
+				}
 			}
 
 		case <-ctx.Done():
@@ -219,7 +221,7 @@ func publish(ctx context.Context, cm *autopaho.ConnectionManager, assetID, topic
 		Topic:   topic,
 		QoS:     1,
 		Payload: sensor,
-		Retain:  true,
+		Retain:  false,
 		Properties: &paho.PublishProperties{
 			MessageExpiry: &expiry,
 			ContentType:   "application/json",

@@ -56,7 +56,7 @@ func main() {
 			_, subErr := cm.Subscribe(context.Background(), &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
 					{Topic: internal.TopicStatus, QoS: 0},
-					{Topic: internal.TopicEngine, QoS: 1},
+					{Topic: internal.TopicEngineAll, QoS: 1},
 				},
 			})
 
@@ -126,7 +126,6 @@ func main() {
 	<-cm.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
 
 	_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
 		Topic:   internal.TopicStatus,
@@ -138,6 +137,8 @@ func main() {
 	if shutdownErr != nil {
 		slog.Error("Pubish offline failed", "error", shutdownErr.Error())
 	}
+
+	cancel()
 
 	<-cm.Done()
 
