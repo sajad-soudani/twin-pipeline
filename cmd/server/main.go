@@ -7,15 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
-)
-
-const (
-	topicStatus            = "twin/status"
-	topicData              = "twin/sensors"
-	topicEngineTemperature = "twin/sensors/engine/temperature"
+	"github.com/sajad-soudani/twin-pipeline/internal"
 )
 
 func main() {
@@ -47,7 +43,7 @@ func main() {
 		SessionExpiryInterval:         60,
 
 		WillMessage: &paho.WillMessage{
-			Topic:   topicStatus,
+			Topic:   internal.TopicStatus,
 			Payload: []byte("offline"),
 			QoS:     1,
 			Retain:  true,
@@ -59,9 +55,8 @@ func main() {
 
 			_, subErr := cm.Subscribe(context.Background(), &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
-					{Topic: topicStatus, QoS: 0},
-					{Topic: topicData, QoS: 1},
-					{Topic: topicEngineTemperature, QoS: 1},
+					{Topic: internal.TopicStatus, QoS: 0},
+					{Topic: internal.TopicEngine, QoS: 1},
 				},
 			})
 
@@ -72,7 +67,7 @@ func main() {
 
 			go func() {
 				_, pubErr := cm.Publish(context.Background(), &paho.Publish{
-					Topic:   topicStatus,
+					Topic:   internal.TopicStatus,
 					QoS:     1,
 					Retain:  true,
 					Payload: []byte("online"),
@@ -126,6 +121,22 @@ func main() {
 
 	if err := cm.AwaitConnection(ctx); err != nil {
 		panic(err)
+	}
+
+	<-cm.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
+		Topic:   internal.TopicStatus,
+		QoS:     1,
+		Retain:  true,
+		Payload: []byte("offline"),
+	})
+
+	if shutdownErr != nil {
+		slog.Error("Pubish offline failed", "error", shutdownErr.Error())
 	}
 
 	<-cm.Done()
