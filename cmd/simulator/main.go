@@ -13,15 +13,12 @@ import (
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
+	"github.com/sajad-soudani/twin-pipeline/internal"
 	"github.com/sajad-soudani/twin-pipeline/pkg/models"
 )
 
 const (
-	topicStatus            = "twin/status"
-	topicData              = "twin/sensors"
-	topicEngineTemperature = "twin/sensors/engine/temperature"
-	noise                  = 0.5
-	tickerDelay            = 2 * time.Second
+	tickerDelay = 2 * time.Second
 )
 
 type SensorGenerator struct {
@@ -30,6 +27,46 @@ type SensorGenerator struct {
 	Period    time.Duration
 	NoiseStd  float64
 	startTime time.Time
+}
+
+type SensorConfig struct {
+	Baseline  float64
+	Amplitude float64
+	Period    time.Duration
+	NoiseStd  float64
+	MinAlert  float64
+	MaxAlert  float64
+}
+
+var DieselGeneratorSensors = map[string]SensorConfig{
+	internal.TopicEngineRPM: {
+		Baseline: 1500, Amplitude: 15, Period: 2 * time.Minute,
+		NoiseStd: 3, MinAlert: 1450, MaxAlert: 1550,
+	},
+	internal.TopicEngineCoolantTemperature: {
+		Baseline: 88, Amplitude: 5, Period: 10 * time.Minute,
+		NoiseStd: 0.8, MinAlert: 80, MaxAlert: 100,
+	},
+	internal.TopicEngineOilPressure: {
+		Baseline: 45, Amplitude: 5, Period: 8 * time.Minute,
+		NoiseStd: 1.2, MinAlert: 15, MaxAlert: 65,
+	},
+	internal.TopicEngineOilTemperature: {
+		Baseline: 100, Amplitude: 6, Period: 12 * time.Minute,
+		NoiseStd: 1.0, MinAlert: 70, MaxAlert: 130,
+	},
+	internal.TopicEngineExhaustTemperature: {
+		Baseline: 480, Amplitude: 60, Period: 5 * time.Minute,
+		NoiseStd: 8, MinAlert: 150, MaxAlert: 750,
+	},
+	internal.TopicEngineBatteryVoltage: {
+		Baseline: 13.6, Amplitude: 0.3, Period: 15 * time.Minute,
+		NoiseStd: 0.05, MinAlert: 12.0, MaxAlert: 14.8,
+	},
+	internal.TopicEngineVibration: {
+		Baseline: 1.2, Amplitude: 0.3, Period: 3 * time.Minute,
+		NoiseStd: 0.15, MinAlert: 0, MaxAlert: 2.8, // B/C boundary
+	},
 }
 
 func NewSensorGenerator(baseline, amplitude, noisestd float64, period time.Duration) *SensorGenerator {
@@ -53,6 +90,20 @@ func (s *SensorGenerator) Next() float64 {
 
 	return s.Baseline + wave + noise
 }
+
+// TODO: must be used
+// func classifyVibration(v float64) string {
+// 	switch {
+// 	case v < 1.4:
+// 		return "A" // good
+// 	case v < 2.8:
+// 		return "B" // acceptable
+// 	case v < 4.5:
+// 		return "C" // unsatisfactory - schedule maintenance
+// 	default:
+// 		return "D" // danger - shutdown
+// 	}
+// }
 
 func main() {
 	var handler slog.Handler
@@ -89,7 +140,7 @@ func main() {
 		},
 
 		ClientConfig: paho.ClientConfig{
-			ClientID:      "simulator-publisherr", // must differ from the publisher's ID
+			ClientID:      "simulator",
 			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
 			OnServerDisconnect: func(d *paho.Disconnect) {
 				slog.Error("OnServerDisconnect", "reasonCode", d.ReasonCode)
@@ -97,13 +148,16 @@ func main() {
 		},
 	}
 
-	cm, cmErr := autopaho.NewConnection(ctx, cfg)
+	cmCtx, cmCancel := context.WithCancel(context.Background())
+	defer cmCancel()
+
+	cm, cmErr := autopaho.NewConnection(cmCtx, cfg)
 	if cmErr != nil {
 		slog.Error("Connection Manager Error", "error", cmErr.Error())
 		panic(cmErr)
 	}
 
-	if err := cm.AwaitConnection(ctx); err != nil {
+	if err := cm.AwaitConnection(cmCtx); err != nil {
 		panic(err)
 	}
 
@@ -113,18 +167,42 @@ func main() {
 
 	n := 0
 
-	tempSensor := NewSensorGenerator(57, 30, noise, time.Minute*5)
 	assetID := "engine"
+
+	sensors := make(map[string]*SensorGenerator, len(DieselGeneratorSensors))
+
+	for k, v := range DieselGeneratorSensors {
+		sensor := NewSensorGenerator(v.Baseline, v.Amplitude, v.NoiseStd, v.Period)
+		sensors[k] = sensor
+	}
 
 loop:
 	for {
 		select {
 		case <-ticker.C:
 			n++
-			go publish(ctx, cm, assetID, topicEngineTemperature, tempSensor, expiry)
+			for k, v := range sensors {
+				go publish(cmCtx, cm, assetID, k, v, expiry)
+			}
 
 		case <-ctx.Done():
 			slog.Warn("Shutting down...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+
+			_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
+				Topic:   internal.TopicStatus,
+				QoS:     1,
+				Retain:  true,
+				Payload: []byte("offline"),
+			})
+
+			if shutdownErr != nil {
+				slog.Error("Publish offline failed", "error", shutdownErr.Error())
+			}
+
+			cmCancel()
+			cancel()
+
 			<-cm.Done()
 			break loop
 		}
