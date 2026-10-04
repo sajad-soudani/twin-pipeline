@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	topicStatus = "twin/status"
-	topicData   = "twin/sensors"
+	topicStatus            = "twin/status"
+	topicData              = "twin/sensors"
+	topicEngineTemperature = "twin/sensors/engine/temperature"
 )
 
 func main() {
@@ -58,7 +59,9 @@ func main() {
 
 			_, subErr := cm.Subscribe(context.Background(), &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
+					{Topic: topicStatus, QoS: 0},
 					{Topic: topicData, QoS: 1},
+					{Topic: topicEngineTemperature, QoS: 1},
 				},
 			})
 

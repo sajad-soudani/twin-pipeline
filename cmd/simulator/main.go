@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	topicStatus = "twin/status"
-	topicData   = "twin/sensors"
+	topicStatus            = "twin/status"
+	topicData              = "twin/sensors"
+	topicEngineTemperature = "twin/sensors/engine/temperature"
+	noise                  = 0.5
+	tickerDelay            = 2 * time.Second
 )
 
 type SensorGenerator struct {
@@ -105,38 +108,21 @@ func main() {
 	}
 
 	expiry := uint32(30)
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(tickerDelay)
 	defer ticker.Stop()
 
 	n := 0
 
-	tempSensor := NewSensorGenerator(57, 30, 0.5, time.Minute*5)
+	tempSensor := NewSensorGenerator(57, 30, noise, time.Minute*5)
+	assetID := "engine"
 
 loop:
 	for {
 		select {
 		case <-ticker.C:
 			n++
-			temp, tempErr := models.Marshal("simulator", "temprature", tempSensor.Next())
-			if tempErr != nil {
-				slog.Error("Marshal Error", "error", tempErr.Error())
-			}
-			_, pubErr := cm.Publish(ctx, &paho.Publish{
-				Topic:   topicData,
-				QoS:     1,
-				Payload: temp,
-				Retain:  true,
-				Properties: &paho.PublishProperties{
-					MessageExpiry: &expiry,
-					ContentType:   "application/json",
-					User: paho.UserProperties{
-						{Key: "sender", Value: "go-demo"},
-					},
-				},
-			})
-			if pubErr != nil && ctx.Err() == nil {
-				slog.Error("Publish Error", "error", pubErr.Error())
-			}
+			go publish(ctx, cm, assetID, topicEngineTemperature, tempSensor, expiry)
+
 		case <-ctx.Done():
 			slog.Warn("Shutting down...")
 			<-cm.Done()
@@ -144,4 +130,27 @@ loop:
 		}
 	}
 
+}
+
+func publish(ctx context.Context, cm *autopaho.ConnectionManager, assetID, topic string, sensorSrc *SensorGenerator, expiry uint32) {
+	sensor, sensorErr := models.Marshal(assetID, "temperature", sensorSrc.Next())
+	if sensorErr != nil {
+		slog.Error("Marshal Error", "error", sensorErr.Error())
+	}
+	_, pubErr := cm.Publish(ctx, &paho.Publish{
+		Topic:   topic,
+		QoS:     1,
+		Payload: sensor,
+		Retain:  true,
+		Properties: &paho.PublishProperties{
+			MessageExpiry: &expiry,
+			ContentType:   "application/json",
+			User: paho.UserProperties{
+				{Key: "sender", Value: "simulator"},
+			},
+		},
+	})
+	if pubErr != nil && ctx.Err() == nil {
+		slog.Error("Publish Error", "error", pubErr.Error())
+	}
 }
