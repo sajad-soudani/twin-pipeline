@@ -205,7 +205,6 @@ loop:
 			cmCancel()
 			cancel()
 
-			<-cm.Done()
 			break loop
 		}
 	}
