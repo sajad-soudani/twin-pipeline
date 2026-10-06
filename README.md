@@ -4,7 +4,7 @@
 
 ### 📍 Phase 0 — Setup
 - [x] `go mod init github.com/sajad-soudani/twin-pipeline`
-- [x] Set up repo structure (see §6)
+- [x] Set up repo structure
 - [x] Docker Compose with a Mosquitto broker
 - [x] Basic `slog` logger wired up
 - [x] Commit: "project scaffold"
