@@ -26,7 +26,6 @@ func main() {
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	u, uErr := url.Parse("mqtt://127.0.0.1:1883")
 	if uErr != nil {
@@ -113,7 +112,9 @@ func main() {
 		},
 	}
 
-	cm, cmErr := autopaho.NewConnection(ctx, cfg)
+	cmCtx, cancelCmCtx := context.WithCancel(context.Background())
+
+	cm, cmErr := autopaho.NewConnection(cmCtx, cfg)
 	if cmErr != nil {
 		slog.Error("Connection Manager Error", "error", cmErr.Error())
 		panic(cmErr)
@@ -123,22 +124,26 @@ func main() {
 		panic(err)
 	}
 
-	<-cm.Done()
+	if <-ctx.Done() == struct{}{} {
+		slog.Warn("Shutting down...")
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second*5)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
+			Topic:   internal.TopicStatus,
+			QoS:     1,
+			Retain:  true,
+			Payload: []byte("offline"),
+		})
 
-	_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
-		Topic:   internal.TopicStatus,
-		QoS:     1,
-		Retain:  true,
-		Payload: []byte("offline"),
-	})
+		if shutdownErr != nil {
+			slog.Error("Pubish offline failed", "error", shutdownErr.Error())
+		}
 
-	if shutdownErr != nil {
-		slog.Error("Pubish offline failed", "error", shutdownErr.Error())
+		cancelShutdown()
+		cancelCmCtx()
+		stop()
+
 	}
-
-	cancel()
 
 	<-cm.Done()
 
