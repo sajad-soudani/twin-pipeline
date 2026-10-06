@@ -15,6 +15,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/sajad-soudani/twin-pipeline/internal"
+	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
 	"github.com/sajad-soudani/twin-pipeline/pkg/models"
 )
 
@@ -135,6 +136,7 @@ func main() {
 
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, c *paho.Connack) {
 			slog.Info("Connection Up", "isSessionPresent", c.SessionPresent)
+			go ingestion.Status(context.Background(), cm, "online")
 		},
 
 		OnConnectError: func(err error) {
@@ -191,16 +193,7 @@ loop:
 			slog.Warn("Shutting down...")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 
-			_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
-				Topic:   internal.TopicStatus,
-				QoS:     1,
-				Retain:  true,
-				Payload: []byte("offline"),
-			})
-
-			if shutdownErr != nil {
-				slog.Error("Publish offline failed", "error", shutdownErr.Error())
-			}
+			ingestion.Status(shutdownCtx, cm, "offline")
 
 			cmCancel()
 			cancel()
