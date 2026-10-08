@@ -12,6 +12,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/sajad-soudani/twin-pipeline/internal"
+	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
 )
 
 func main() {
@@ -64,17 +65,7 @@ func main() {
 				return
 			}
 
-			go func() {
-				_, pubErr := cm.Publish(context.Background(), &paho.Publish{
-					Topic:   internal.TopicStatus,
-					QoS:     1,
-					Retain:  true,
-					Payload: []byte("online"),
-				})
-				if pubErr != nil {
-					slog.Error("OnConnectionUp pub online failed", "error", pubErr.Error())
-				}
-			}()
+			go ingestion.Status(context.Background(), cm, "online")
 		},
 
 		OnConnectError: func(err error) {
@@ -85,24 +76,7 @@ func main() {
 			ClientID: "twin-server",
 
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-				func(pr paho.PublishReceived) (bool, error) {
-					p := pr.Packet
-					slog.Info(
-						"OnPublishRecv",
-						"topic", p.Topic,
-						"qos", p.QoS,
-						"retain", p.Retain,
-						"payload", p.Payload,
-					)
-
-					if p.Properties != nil {
-						for _, up := range p.Properties.User {
-							slog.Info("user-properties", up.Key, up.Value)
-						}
-					}
-
-					return true, nil
-				},
+				ingestion.Engine,
 			},
 
 			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
@@ -128,16 +102,7 @@ func main() {
 		slog.Warn("Shutting down...")
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second*5)
 
-		_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
-			Topic:   internal.TopicStatus,
-			QoS:     1,
-			Retain:  true,
-			Payload: []byte("offline"),
-		})
-
-		if shutdownErr != nil {
-			slog.Error("Pubish offline failed", "error", shutdownErr.Error())
-		}
+		ingestion.Status(shutdownCtx, cm, "offline")
 
 		cancelShutdown()
 		cancelCmCtx()
