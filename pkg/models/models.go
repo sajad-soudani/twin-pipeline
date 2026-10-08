@@ -12,6 +12,13 @@ type SensorData struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+type AssetState struct {
+	AssetID    string             `json:"asset_id"`
+	Metrics    map[string]float64 `json:"metrics"`
+	LastUpdate time.Time          `json:"last_update"`
+	Status     string             `json:"status"`
+}
+
 func Marshal(assetID, metric string, value float64) ([]byte, error) {
 	sd := SensorData{
 		AssetID:   assetID,
