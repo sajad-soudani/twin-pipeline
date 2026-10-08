@@ -15,6 +15,40 @@ import (
 	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
 )
 
+type Job struct {
+	Topic   string
+	QoS     byte
+	Payload []byte
+	Retain  bool
+}
+
+func StartWorkerPool(ctx context.Context, count int, jobs <-chan Job) {
+	for i := range count {
+		go worker(ctx, i, jobs)
+	}
+}
+
+func worker(ctx context.Context, id int, jobs <-chan Job) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-jobs:
+			if !ok {
+				return
+			}
+			slog.Info(
+				"OnPublishRecv",
+				"workerID", id,
+				"topic", job.Topic,
+				"qos", job.QoS,
+				"retain", job.Retain,
+				"payload", job.Payload,
+			)
+		}
+	}
+}
+
 func main() {
 	var handler slog.Handler
 	if os.Getenv("ENV") == "production" {
@@ -32,6 +66,9 @@ func main() {
 	if uErr != nil {
 		slog.Error("MQTT URL parsing error", "error", uErr.Error())
 	}
+
+	jobs := make(chan Job, 1000)
+	StartWorkerPool(ctx, 10, jobs)
 
 	willDelay := uint32(5)
 
@@ -76,7 +113,24 @@ func main() {
 			ClientID: "twin-server",
 
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-				ingestion.Engine,
+
+				func(pr paho.PublishReceived) (bool, error) {
+					jobs <- Job{
+						Topic:   pr.Packet.Topic,
+						QoS:     pr.Packet.QoS,
+						Payload: pr.Packet.Payload,
+						Retain:  pr.Packet.Retain,
+					}
+
+					if pr.Packet.Properties != nil {
+						for _, up := range pr.Packet.Properties.User {
+							slog.Info("user-properties", up.Key, up.Value)
+						}
+					}
+
+					return true, nil
+				},
+				// ingestion.Engine,
 			},
 
 			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
