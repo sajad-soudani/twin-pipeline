@@ -12,6 +12,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/sajad-soudani/twin-pipeline/internal"
+	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
 )
 
 type Job struct {
@@ -60,7 +61,6 @@ func main() {
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	u, uErr := url.Parse("mqtt://127.0.0.1:1883")
 	if uErr != nil {
@@ -102,17 +102,7 @@ func main() {
 				return
 			}
 
-			go func() {
-				_, pubErr := cm.Publish(context.Background(), &paho.Publish{
-					Topic:   internal.TopicStatus,
-					QoS:     1,
-					Retain:  true,
-					Payload: []byte("online"),
-				})
-				if pubErr != nil {
-					slog.Error("OnConnectionUp pub online failed", "error", pubErr.Error())
-				}
-			}()
+			go ingestion.Status(context.Background(), cm, "online")
 		},
 
 		OnConnectError: func(err error) {
@@ -123,6 +113,7 @@ func main() {
 			ClientID: "twin-server",
 
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+
 				func(pr paho.PublishReceived) (bool, error) {
 					jobs <- Job{
 						Topic:   pr.Packet.Topic,
@@ -139,6 +130,7 @@ func main() {
 
 					return true, nil
 				},
+				// ingestion.Engine,
 			},
 
 			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
@@ -148,7 +140,9 @@ func main() {
 		},
 	}
 
-	cm, cmErr := autopaho.NewConnection(ctx, cfg)
+	cmCtx, cancelCmCtx := context.WithCancel(context.Background())
+
+	cm, cmErr := autopaho.NewConnection(cmCtx, cfg)
 	if cmErr != nil {
 		slog.Error("Connection Manager Error", "error", cmErr.Error())
 		panic(cmErr)
@@ -158,22 +152,17 @@ func main() {
 		panic(err)
 	}
 
-	<-cm.Done()
+	if <-ctx.Done() == struct{}{} {
+		slog.Warn("Shutting down...")
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second*5)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		ingestion.Status(shutdownCtx, cm, "offline")
 
-	_, shutdownErr := cm.Publish(shutdownCtx, &paho.Publish{
-		Topic:   internal.TopicStatus,
-		QoS:     1,
-		Retain:  true,
-		Payload: []byte("offline"),
-	})
+		cancelShutdown()
+		cancelCmCtx()
+		stop()
 
-	if shutdownErr != nil {
-		slog.Error("Pubish offline failed", "error", shutdownErr.Error())
 	}
-
-	cancel()
 
 	<-cm.Done()
 
