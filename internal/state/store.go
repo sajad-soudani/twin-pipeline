@@ -23,11 +23,14 @@ func (s *Store) Update(data models.SensorData) models.AssetState {
 
 	a, ok := s.assets[data.AssetID]
 	if !ok {
-		s.assets[data.AssetID] = &models.AssetState{
+		a = &models.AssetState{
 			AssetID: data.AssetID,
 			Metrics: make(map[string]float64),
 			Status:  "nominal",
 		}
+
+		s.assets[data.AssetID] = a
+
 	}
 	a.Metrics[data.Metric] = data.Value
 	a.LastUpdate = data.Timestamp
