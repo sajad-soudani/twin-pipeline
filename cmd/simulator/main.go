@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 
 const (
 	tickerDelay = time.Second
-	assetsCount = 50
+	assetsCount = 10
 )
 
 type SensorGenerator struct {
@@ -183,9 +184,9 @@ loop:
 		select {
 		case <-ticker.C:
 			for i := range assetsCount {
-				for k, v := range sensors {
-					slog.Debug(fmt.Sprintf("#%d for: %q", i, k))
-					go publish(cmCtx, cm, assetID, k, v, expiry)
+				for topic, sensorData := range sensors {
+					slog.Debug(fmt.Sprintf("#%d for: %q", i, topic))
+					go publish(cmCtx, cm, assetID, topic, sensorData, expiry)
 				}
 			}
 
@@ -205,7 +206,8 @@ loop:
 }
 
 func publish(ctx context.Context, cm *autopaho.ConnectionManager, assetID, topic string, sensorSrc *SensorGenerator, expiry uint32) {
-	sensor, sensorErr := models.Marshal(assetID, "temperature", sensorSrc.Next())
+	metric := strings.Split(topic, "/")
+	sensor, sensorErr := models.Marshal(assetID, metric[len(metric)-1], sensorSrc.Next())
 	if sensorErr != nil {
 		slog.Error("Marshal Error", "error", sensorErr.Error())
 	}

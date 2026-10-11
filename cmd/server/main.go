@@ -13,35 +13,9 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/sajad-soudani/twin-pipeline/internal"
 	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
+	"github.com/sajad-soudani/twin-pipeline/internal/state"
+	"github.com/sajad-soudani/twin-pipeline/internal/worker"
 )
-
-type Job struct {
-	Topic      string
-	QoS        byte
-	Payload    []byte
-	Retain     bool
-	Properties paho.UserProperties
-}
-
-func StartWorkerPool(ctx context.Context, count int, jobs <-chan Job) {
-	for i := range count {
-		go worker(ctx, i, jobs)
-	}
-}
-
-func worker(ctx context.Context, id int, jobs <-chan Job) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case job, ok := <-jobs:
-			if !ok {
-				return
-			}
-			ingestion.Engine(id, job.Topic, job.Payload, job.QoS, job.Retain, job.Properties)
-		}
-	}
-}
 
 func main() {
 	var handler slog.Handler
@@ -61,8 +35,9 @@ func main() {
 		slog.Error("MQTT URL parsing error", "error", uErr.Error())
 	}
 
-	jobs := make(chan Job, 1000)
-	StartWorkerPool(ctx, 10, jobs)
+	jobs := make(chan worker.Job, 1000)
+	store := state.NewStore()
+	worker.StartWorkerPool(ctx, 10, jobs, store)
 
 	willDelay := uint32(5)
 
@@ -109,7 +84,7 @@ func main() {
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
 
 				func(pr paho.PublishReceived) (bool, error) {
-					jobs <- Job{
+					jobs <- worker.Job{
 						Topic:      pr.Packet.Topic,
 						QoS:        pr.Packet.QoS,
 						Payload:    pr.Packet.Payload,
