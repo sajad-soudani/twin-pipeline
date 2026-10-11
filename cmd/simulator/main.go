@@ -22,7 +22,7 @@ import (
 
 const (
 	tickerDelay = time.Second
-	assetsCount = 1
+	assetsCount = 10
 )
 
 type SensorGenerator struct {
