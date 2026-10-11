@@ -184,7 +184,7 @@ loop:
 		case <-ticker.C:
 			for i := range assetsCount {
 				for k, v := range sensors {
-					slog.Debug(fmt.Sprintf("#%d for: \" %s \"", i, k))
+					slog.Debug(fmt.Sprintf("#%d for: %q", i, k))
 					go publish(cmCtx, cm, assetID, k, v, expiry)
 				}
 			}

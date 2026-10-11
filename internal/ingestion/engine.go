@@ -6,16 +6,15 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 )
 
-func Engine(pr paho.PublishReceived) (bool, error) {
-	p := pr.Packet
+func Engine(workerID int, topic string, payload []byte, qos byte, retain bool, properties paho.UserProperties) {
 	slog.Info(
 		"OnPublishRecv",
-		"topic", p.Topic,
-		"qos", p.QoS,
-		"retain", p.Retain,
-		"payload", p.Payload,
-		"properties", p.Properties.User,
+		"workerID", workerID,
+		"topic", topic,
+		"qos", qos,
+		"retain", retain,
+		"payload", payload,
+		"properties", properties,
 	)
 
-	return true, nil
 }

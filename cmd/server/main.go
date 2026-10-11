@@ -16,10 +16,11 @@ import (
 )
 
 type Job struct {
-	Topic   string
-	QoS     byte
-	Payload []byte
-	Retain  bool
+	Topic      string
+	QoS        byte
+	Payload    []byte
+	Retain     bool
+	Properties paho.UserProperties
 }
 
 func StartWorkerPool(ctx context.Context, count int, jobs <-chan Job) {
@@ -37,14 +38,7 @@ func worker(ctx context.Context, id int, jobs <-chan Job) {
 			if !ok {
 				return
 			}
-			slog.Info(
-				"OnPublishRecv",
-				"workerID", id,
-				"topic", job.Topic,
-				"qos", job.QoS,
-				"retain", job.Retain,
-				"payload", job.Payload,
-			)
+			ingestion.Engine(id, job.Topic, job.Payload, job.QoS, job.Retain, job.Properties)
 		}
 	}
 }
@@ -116,10 +110,11 @@ func main() {
 
 				func(pr paho.PublishReceived) (bool, error) {
 					jobs <- Job{
-						Topic:   pr.Packet.Topic,
-						QoS:     pr.Packet.QoS,
-						Payload: pr.Packet.Payload,
-						Retain:  pr.Packet.Retain,
+						Topic:      pr.Packet.Topic,
+						QoS:        pr.Packet.QoS,
+						Payload:    pr.Packet.Payload,
+						Retain:     pr.Packet.Retain,
+						Properties: pr.Packet.Properties.User,
 					}
 
 					if pr.Packet.Properties != nil {
@@ -130,7 +125,6 @@ func main() {
 
 					return true, nil
 				},
-				// ingestion.Engine,
 			},
 
 			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
