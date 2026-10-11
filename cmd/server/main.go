@@ -117,12 +117,6 @@ func main() {
 						Properties: pr.Packet.Properties.User,
 					}
 
-					if pr.Packet.Properties != nil {
-						for _, up := range pr.Packet.Properties.User {
-							slog.Info("user-properties", up.Key, up.Value)
-						}
-					}
-
 					return true, nil
 				},
 			},
