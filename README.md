@@ -22,8 +22,8 @@
 - [x] **Milestone check:** readings are being received and parsed without dropped messages under load (test with 50–100 simulated assets)
 
 ### 📍 Phase 3 — Concurrent State Store
-- [ ] Implement the state store with `sync.RWMutex`
-- [ ] On each reading, update the asset's latest metric value and `LastUpdate`
+- [x] Implement the state store with `sync.RWMutex`
+- [x] On each reading, update the asset's latest metric value and `LastUpdate`
 - [ ] Write a benchmark (`go test -bench`) simulating concurrent reads/writes to prove there's no race condition
 - [ ] **Milestone check:** `go test -race ./...` passes clean under concurrent load
 
