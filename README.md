@@ -1,4 +1,4 @@
-# twin-pipeline
+# Twin Pipeline
 
 A small real-time **digital-twin pipeline** in Go: simulated sensors publish over MQTT,
 a concurrent server ingests them into an in-memory state store, and (soon) streams the
