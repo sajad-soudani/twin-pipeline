@@ -1,79 +1,90 @@
+// Package state is the concurrent in-memory view of every asset.
 package state
 
 import (
+	"cmp"
+	"errors"
 	"maps"
-	"sort"
+	"slices"
 	"sync"
 
-	"github.com/sajad-soudani/twin-pipeline/pkg/models"
+	"github.com/sajad-soudani/twin-pipeline/internal/model"
 )
 
+// ErrTooManyAssets is returned when the asset cap is reached.
+var ErrTooManyAssets = errors.New("state: asset limit reached")
+
 type Store struct {
-	mu     sync.RWMutex
-	assets map[string]*models.AssetState
+	mu        sync.RWMutex
+	assets    map[string]*model.AssetState
+	maxAssets int
 }
 
-func NewStore() *Store {
-	return &Store{assets: make(map[string]*models.AssetState)}
+// NewStore returns an empty store. maxAssets <= 0 means unlimited.
+func NewStore(maxAssets int) *Store {
+	return &Store{assets: make(map[string]*model.AssetState), maxAssets: maxAssets}
 }
 
-func (s *Store) Update(data models.SensorData) models.AssetState {
+// Update records a reading. It reports applied=false (and no error) when the
+// reading is OLDER than what we already hold for that metric.
+//
+// That check matters: a worker pool does not preserve message order, and a
+// reconnecting session replays queued messages, so "last write wins" would
+// let stale data overwrite fresh data.
+func (s *Store) Update(assetID, metric string, r model.Reading) (applied bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	a, ok := s.assets[data.AssetID]
+	a, ok := s.assets[assetID]
 	if !ok {
-		a = &models.AssetState{
-			AssetID: data.AssetID,
-			Metrics: make(map[string]float64),
-			Status:  "nominal",
+		if s.maxAssets > 0 && len(s.assets) >= s.maxAssets {
+			return false, ErrTooManyAssets
 		}
-
-		s.assets[data.AssetID] = a
-
+		a = &model.AssetState{
+			AssetID: assetID,
+			Metrics: make(map[string]model.Reading),
+			Status:  model.StatusNominal,
+		}
+		s.assets[assetID] = a
 	}
-	a.Metrics[data.Metric] = data.Value
-	a.LastUpdate = data.Timestamp
 
-	return clone(a) // nobody should be able to touch the system's state, only the system itself
+	if prev, ok := a.Metrics[metric]; ok && r.Timestamp.Before(prev.Timestamp) {
+		return false, nil
+	}
+	a.Metrics[metric] = r
+	if r.Timestamp.After(a.LastUpdate) {
+		a.LastUpdate = r.Timestamp
+	}
+	return true, nil
 }
 
-func (s *Store) Get(assetID string) (models.AssetState, bool) {
+// Get returns a copy; callers can't mutate the store through it.
+func (s *Store) Get(assetID string) (model.AssetState, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	a, ok := s.assets[assetID]
-
 	if !ok {
-		return models.AssetState{}, false
+		return model.AssetState{}, false
 	}
-
 	return clone(a), true
 }
 
-func (s *Store) Snapshot() []models.AssetState {
+// Snapshot returns copies of all assets sorted by ID.
+func (s *Store) Snapshot() []model.AssetState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	res := make([]models.AssetState, 0, len(s.assets))
-
-	for _, v := range s.assets {
-		res = append(res, clone(v))
+	out := make([]model.AssetState, 0, len(s.assets))
+	for _, a := range s.assets {
+		out = append(out, clone(a))
 	}
-
-	sort.Slice(res, func(i, j int) bool { return res[i].AssetID < res[j].AssetID })
-
-	return res
-
+	slices.SortFunc(out, func(x, y model.AssetState) int { return cmp.Compare(x.AssetID, y.AssetID) })
+	return out
 }
 
-func clone(a *models.AssetState) models.AssetState {
-	m := make(map[string]float64, len(a.Metrics))
-
-	maps.Copy(m, a.Metrics)
-
+func clone(a *model.AssetState) model.AssetState {
 	c := *a
-	c.Metrics = m
-
+	c.Metrics = maps.Clone(a.Metrics) // Reading is a value type, so this is a deep copy
 	return c
 }

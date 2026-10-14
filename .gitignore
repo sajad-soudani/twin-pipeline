@@ -31,3 +31,8 @@ go.work.sum
 # .idea/
 .vscode/
 tmp/
+
+# local runtime artifacts
+build-errors.log
+mosquitto/data/
+mosquitto/log/

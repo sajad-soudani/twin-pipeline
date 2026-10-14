@@ -2,9 +2,32 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "127.0.0.1:1883:1883" # localhost only; the config allows anonymous publish
     volumes:
-      - ./mosquitto/config:/mosquitto/config
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - ./mosquitto/config:/mosquitto/config:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -i healthcheck -W 3"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: { context: ., args: { CMD: server } }
+    environment:
+      ENV: production
+      MQTT_BROKER_URL: mqtt://mosquitto:1883
+    depends_on:
+      mosquitto: { condition: service_healthy }
+
+  simulator:
+    build: { context: ., args: { CMD: simulator } }
+    environment:
+      ENV: production
+      MQTT_BROKER_URL: mqtt://mosquitto:1883
+      ASSETS: "50"
+    depends_on:
+      mosquitto: { condition: service_healthy }
+
+volumes:
+  mosquitto-data:

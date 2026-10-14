@@ -2,229 +2,153 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"math/rand/v2"
-	"net/url"
 	"os"
 	"os/signal"
-	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
-	"github.com/sajad-soudani/twin-pipeline/internal"
-	"github.com/sajad-soudani/twin-pipeline/internal/ingestion"
-	"github.com/sajad-soudani/twin-pipeline/pkg/models"
+	"github.com/sajad-soudani/twin-pipeline/internal/config"
+	"github.com/sajad-soudani/twin-pipeline/internal/logging"
+	"github.com/sajad-soudani/twin-pipeline/internal/model"
+	"github.com/sajad-soudani/twin-pipeline/internal/mqttx"
+	"github.com/sajad-soudani/twin-pipeline/internal/sim"
+	"github.com/sajad-soudani/twin-pipeline/internal/topics"
 )
 
-const (
-	tickerDelay = time.Second
-	assetsCount = 10
-)
-
-type SensorGenerator struct {
-	Baseline  float64
-	Amplitude float64
-	Period    time.Duration
-	NoiseStd  float64
-	startTime time.Time
-}
-
-type SensorConfig struct {
-	Baseline  float64
-	Amplitude float64
-	Period    time.Duration
-	NoiseStd  float64
-	MinAlert  float64
-	MaxAlert  float64
-}
-
-var DieselGeneratorSensors = map[string]SensorConfig{
-	internal.TopicEngineRPM: {
-		Baseline: 1500, Amplitude: 15, Period: 2 * time.Minute,
-		NoiseStd: 3, MinAlert: 1450, MaxAlert: 1550,
-	},
-	internal.TopicEngineCoolantTemperature: {
-		Baseline: 88, Amplitude: 5, Period: 10 * time.Minute,
-		NoiseStd: 0.8, MinAlert: 80, MaxAlert: 100,
-	},
-	internal.TopicEngineOilPressure: {
-		Baseline: 45, Amplitude: 5, Period: 8 * time.Minute,
-		NoiseStd: 1.2, MinAlert: 15, MaxAlert: 65,
-	},
-	internal.TopicEngineOilTemperature: {
-		Baseline: 100, Amplitude: 6, Period: 12 * time.Minute,
-		NoiseStd: 1.0, MinAlert: 70, MaxAlert: 130,
-	},
-	internal.TopicEngineExhaustTemperature: {
-		Baseline: 480, Amplitude: 60, Period: 5 * time.Minute,
-		NoiseStd: 8, MinAlert: 150, MaxAlert: 750,
-	},
-	internal.TopicEngineBatteryVoltage: {
-		Baseline: 13.6, Amplitude: 0.3, Period: 15 * time.Minute,
-		NoiseStd: 0.05, MinAlert: 12.0, MaxAlert: 14.8,
-	},
-	internal.TopicEngineVibration: {
-		Baseline: 1.2, Amplitude: 0.3, Period: 3 * time.Minute,
-		NoiseStd: 0.15, MinAlert: 0, MaxAlert: 2.8, // B/C boundary
-	},
-}
-
-func NewSensorGenerator(baseline, amplitude, noisestd float64, period time.Duration) *SensorGenerator {
-	return &SensorGenerator{
-		Baseline:  baseline,
-		Amplitude: amplitude,
-		Period:    period,
-		NoiseStd:  noisestd,
-		startTime: time.Now(),
-	}
-}
-
-func (s *SensorGenerator) Next() float64 {
-	elapsed := time.Since(s.startTime).Seconds()
-	periodSeconds := s.Period.Seconds()
-
-	angel := 2 * math.Pi * (elapsed / periodSeconds)
-	wave := s.Amplitude * math.Sin(angel)
-
-	noise := rand.NormFloat64() * s.NoiseStd
-
-	return s.Baseline + wave + noise
-}
-
-// TODO: must be used
-// func classifyVibration(v float64) string {
-// 	switch {
-// 	case v < 1.4:
-// 		return "A" // good
-// 	case v < 2.8:
-// 		return "B" // acceptable
-// 	case v < 4.5:
-// 		return "C" // unsatisfactory - schedule maintenance
-// 	default:
-// 		return "D" // danger - shutdown
-// 	}
-// }
+const messageExpirySeconds = 30
 
 func main() {
-	var handler slog.Handler
-	if os.Getenv("ENV") == "production" {
-		handler = slog.NewJSONHandler(os.Stdout, nil)
-	} else {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+	cfg, err := config.LoadSimulator(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config:", err)
+		os.Exit(2)
 	}
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	logging.Setup(cfg.Production())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	u, uErr := url.Parse("mqtt://127.0.0.1:1883")
-	if uErr != nil {
-		slog.Error("MQTT URL parsing error", "error", uErr.Error())
+	if err := run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("simulator failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, cfg config.Simulator) error {
+	mqttCfg, err := mqttx.NewConfig(mqttx.Options{
+		BrokerURL:  cfg.BrokerURL,
+		ClientID:   cfg.ClientID,
+		CleanStart: true, // a simulator has no session worth keeping
+	})
+	if err != nil {
+		return err
 	}
 
-	cfg := autopaho.ClientConfig{
-		ServerUrls: []*url.URL{u},
-		KeepAlive:  20,
+	connCtx, cancelConn := context.WithCancel(context.Background())
+	defer cancelConn()
 
-		CleanStartOnInitialConnection: true,
-		SessionExpiryInterval:         60,
-
-		OnConnectionUp: func(cm *autopaho.ConnectionManager, c *paho.Connack) {
-			slog.Info("Connection Up", "isSessionPresent", c.SessionPresent)
-			go ingestion.Status(context.Background(), cm, "online")
-		},
-
-		OnConnectError: func(err error) {
-			slog.Error("OnConnectionError", "error", err.Error())
-		},
-
-		ClientConfig: paho.ClientConfig{
-			ClientID:      "simulator",
-			OnClientError: func(err error) { slog.Error("OnClientError", "error", err.Error()) },
-			OnServerDisconnect: func(d *paho.Disconnect) {
-				slog.Error("OnServerDisconnect", "reasonCode", d.ReasonCode)
-			},
-		},
+	cm, err := autopaho.NewConnection(connCtx, mqttCfg)
+	if err != nil {
+		return fmt.Errorf("create connection: %w", err)
+	}
+	if err := cm.AwaitConnection(ctx); err != nil { // ctx, not connCtx: Ctrl-C must work here
+		return fmt.Errorf("await connection: %w", err)
 	}
 
-	cmCtx, cmCancel := context.WithCancel(context.Background())
-	defer cmCancel()
+	// Seed from the clock; inject a fixed seed here for reproducible runs.
+	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))
+	sources := sim.NewFleet(cfg.Assets, cfg.NoiseScale, rng)
+	slog.Info("simulating", "assets", cfg.Assets, "streams", len(sources), "interval", cfg.Interval)
 
-	cm, cmErr := autopaho.NewConnection(cmCtx, cfg)
-	if cmErr != nil {
-		slog.Error("Connection Manager Error", "error", cmErr.Error())
-		panic(cmErr)
-	}
-
-	if err := cm.AwaitConnection(cmCtx); err != nil {
-		panic(err)
-	}
-
-	expiry := uint32(30)
-	ticker := time.NewTicker(tickerDelay)
+	start := time.Now()
+	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
-
-	assetID := "engine"
-
-	sensors := make(map[string]*SensorGenerator, len(DieselGeneratorSensors))
-
-	for k, v := range DieselGeneratorSensors {
-		sensor := NewSensorGenerator(v.Baseline, v.Amplitude, v.NoiseStd, v.Period)
-		sensors[k] = sensor
-	}
 
 loop:
 	for {
 		select {
-		case <-ticker.C:
-			for i := range assetsCount {
-				for topic, sensorData := range sensors {
-					slog.Debug(fmt.Sprintf("#%d for: %q", i, topic))
-					go publish(cmCtx, cm, assetID, topic, sensorData, expiry)
-				}
-			}
-
 		case <-ctx.Done():
-			slog.Warn("Shutting down...")
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-
-			ingestion.Status(shutdownCtx, cm, "offline")
-
-			cmCancel()
-			cancel()
-
 			break loop
+		case now := <-ticker.C:
+			publishTick(ctx, cm, sources, now, now.Sub(start), cfg.Concurrency)
 		}
 	}
 
+	slog.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mqttx.PublishStatus(shutdownCtx, cm, cfg.ClientID, mqttx.Offline)
+	if err := cm.Disconnect(shutdownCtx); err != nil {
+		slog.Warn("disconnect", "err", err)
+	}
+	select {
+	case <-cm.Done():
+	case <-shutdownCtx.Done():
+	}
+	return nil
 }
 
-func publish(ctx context.Context, cm *autopaho.ConnectionManager, assetID, topic string, sensorSrc *SensorGenerator, expiry uint32) {
-	metric := strings.Split(topic, "/")
-	sensor, sensorErr := models.Marshal(assetID, metric[len(metric)-1], sensorSrc.Next())
-	if sensorErr != nil {
-		slog.Error("Marshal Error", "error", sensorErr.Error())
+type outgoing struct {
+	topic   string
+	payload []byte
+}
+
+// publishTick samples every source (single goroutine: generators aren't
+// thread-safe), then publishes with bounded concurrency and WAITS for the
+// batch. The original spawned one goroutine per message with no bound and no
+// wait, so a slow broker meant an ever-growing pile of goroutines.
+func publishTick(ctx context.Context, cm *autopaho.ConnectionManager, sources []sim.Source, now time.Time, elapsed time.Duration, concurrency int) {
+	batch := make([]outgoing, 0, len(sources))
+	for _, s := range sources {
+		payload, err := model.EncodeReading(s.Gen.At(elapsed), now)
+		if err != nil {
+			slog.Error("encode reading", "asset", s.AssetID, "metric", s.Metric, "err", err)
+			continue // never publish a nil payload
+		}
+		batch = append(batch, outgoing{topics.Sensor(s.AssetID, s.Metric), payload})
 	}
-	_, pubErr := cm.Publish(ctx, &paho.Publish{
-		Topic:   topic,
+
+	var (
+		wg     sync.WaitGroup
+		failed atomic.Int64
+		sem    = make(chan struct{}, concurrency)
+	)
+	for _, m := range batch {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if err := publish(ctx, cm, m); err != nil && ctx.Err() == nil {
+				failed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// One line per tick, not one per failed message (that is 70+ lines/s in an outage).
+	if n := failed.Load(); n > 0 {
+		slog.Warn("publish failures", "failed", n, "of", len(batch))
+	}
+}
+
+func publish(ctx context.Context, cm *autopaho.ConnectionManager, m outgoing) error {
+	expiry := uint32(messageExpirySeconds)
+	_, err := cm.Publish(ctx, &paho.Publish{
+		Topic:   m.topic,
 		QoS:     1,
-		Payload: sensor,
-		Retain:  false,
+		Payload: m.payload,
 		Properties: &paho.PublishProperties{
 			MessageExpiry: &expiry,
 			ContentType:   "application/json",
-			User: paho.UserProperties{
-				{Key: "sender", Value: "simulator"},
-			},
 		},
 	})
-	if pubErr != nil && ctx.Err() == nil {
-		slog.Error("Publish Error", "error", pubErr.Error())
-	}
+	return err
 }

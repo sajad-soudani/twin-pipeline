@@ -1,48 +1,74 @@
 # twin-pipeline
 
-## 5. Build Plan — Phased Milestones
+A small real-time **digital-twin pipeline** in Go: simulated sensors publish over MQTT,
+a concurrent server ingests them into an in-memory state store, and (soon) streams the
+live state to a dashboard.
 
-### 📍 Phase 0 — Setup
-- [x] `go mod init github.com/sajad-soudani/twin-pipeline`
-- [x] Set up repo structure
-- [x] Docker Compose with a Mosquitto broker
-- [x] Basic `slog` logger wired up
-- [x] Commit: "project scaffold"
+```
+┌───────────┐  twin/sensors/{asset}/{metric}  ┌────────────┐   ┌──────────────┐   ┌─────────────┐
+│ simulator │ ───────── MQTT (QoS 1) ───────▶ │  mosquitto │──▶│ server       │──▶│ state.Store │
+└───────────┘                                 └────────────┘   │ worker pool  │   │ (RWMutex)   │
+   N assets × 7 metrics                                        │ → ingest     │   └─────────────┘
+                                                               └──────────────┘
+```
 
-### 📍 Phase 1 — Sensor Simulator
-- [x] Write a simulator that spins up N virtual "assets," each publishing readings on an interval with realistic noise (e.g. sine wave + random jitter for temperature)
-- [x] Publish readings to MQTT topic `sensors/{asset_id}/{metric}`
-- [x] Make interval, asset count, and noise level configurable
-- [x] **Milestone check:** you can watch readings being generated in the logs
+## Quick start
 
-### 📍 Phase 2 — Ingestion Layer
-- [x] Subscribe to all sensor topics (wildcard subscription)
-- [x] Each incoming message is handed to a worker pool (bounded number of goroutines) for validation/parsing
-- [x] Use a `context.Context` for graceful shutdown
-- [x] **Milestone check:** readings are being received and parsed without dropped messages under load (test with 50–100 simulated assets)
+```bash
+make broker          # mosquitto in Docker
+make server          # terminal 1   (hot reload via `air`; or: go run ./cmd/server)
+make simulator       # terminal 2   (or: ASSETS=50 go run ./cmd/simulator)
+```
 
-### 📍 Phase 3 — Concurrent State Store
-- [x] Implement the state store with `sync.RWMutex`
-- [x] On each reading, update the asset's latest metric value and `LastUpdate`
-- [ ] Write a benchmark (`go test -bench`) simulating concurrent reads/writes to prove there's no race condition
-- [ ] **Milestone check:** `go test -race ./...` passes clean under concurrent load
+Everything in containers: `make up`.
 
-### 📍 Phase 4 — Broadcast Hub / WebSocket Streaming
-- [ ] Implement a pub/sub hub: clients connect via WebSocket, get the current full state snapshot, then receive deltas as they happen
-- [ ] Handle client disconnects gracefully (don't leak goroutines)
-- [ ] **Milestone check:** open the WS endpoint in `websocat` or a tiny HTML page and watch live updates stream in
+## Configuration (environment variables)
 
-### 📍 Phase 5 — Anomaly Hook
-- [ ] Define an interface: `type AnomalyDetector interface { Check(AssetState) (isAnomaly bool, reason string) }`
-- [ ] Implement a trivial threshold-based detector for now (e.g. temp > 80 = warning)
-- [ ] Wire it into the state update path so `AssetState.Status` gets set
-- [ ] **This is your seam for the AI project later**
+| Variable | Used by | Default | Meaning |
+|---|---|---|---|
+| `ENV` | both | `development` | `production` → JSON logs |
+| `MQTT_BROKER_URL` | both | `mqtt://127.0.0.1:1883` | Broker address |
+| `MQTT_CLIENT_ID` | both | `twin-server` / `simulator` | Must be unique per running client |
+| `WORKERS` | server | `10` | Worker goroutines |
+| `QUEUE_SIZE` | server | `1000` | Buffered jobs before backpressure |
+| `MAX_ASSETS` | server | `10000` | Cap on distinct assets (0 = unlimited) |
+| `STATS_INTERVAL` | server | `10s` | How often ingest counters are logged |
+| `ASSETS` | simulator | `10` | Number of simulated assets |
+| `INTERVAL` | simulator | `1s` | Publish interval |
+| `NOISE_SCALE` | simulator | `1` | Multiplier on sensor noise (0 = clean sine) |
+| `PUBLISH_CONCURRENCY` | simulator | `32` | Max in-flight publishes |
 
-### 📍 Phase 6 — Polish
-- [ ] Add a `/health` and `/metrics` endpoint
-- [ ] Dockerize the whole thing (`docker-compose up` should run simulator + ingestion + broker together)
-- [ ] Write a README with an architecture diagram and a GIF/screenshot of the live dashboard
-- [ ] Add basic integration test: spin up simulator + ingestion in-process, assert state store reflects readings within N seconds
+## Topics & payload
 
-### 📍 Phase 7 — Minimal Dashboard
-- [ ] A single HTML/JS page (or tiny React app) that connects to the WebSocket and renders asset cards with live-updating values and color-coded status
+| Topic | Payload | Notes |
+|---|---|---|
+| `twin/sensors/{asset_id}/{metric}` | `{"value": 1503.2, "timestamp": "2026-10-11T12:00:00Z"}` | Asset and metric come from the topic only |
+| `twin/status/{client_id}` | `online` / `offline` | Retained; `offline` is also the last-will |
+
+## Design decisions worth knowing
+
+- **Stale readings are dropped.** Workers don't preserve order and a resumed MQTT session replays
+  queued messages, so the store only accepts a reading if it is not older than the one it holds.
+- **Backpressure, not loss.** When the queue is full the MQTT receive path blocks. Swap
+  `pool.Submit` for a non-blocking send + drop counter if you prefer freshness over completeness.
+- **Ordered shutdown.** stop receiving (disconnect) → drain queue → exit.
+- **Core packages don't import MQTT.** `state`, `pool`, `ingest`, `sim`, `topics`, `config` are plain
+  Go and unit-tested; only `mqttx` and `cmd/*` touch paho.
+
+## Development
+
+```bash
+make check    # vet + tests with the race detector (what CI runs)
+make bench    # store benchmarks
+```
+
+## Roadmap
+
+- [x] **0 Setup** – module, Compose + Mosquitto, `slog`
+- [x] **1 Simulator** – N assets, configurable interval/noise, topic scheme above
+- [x] **2 Ingestion** – wildcard subscription, bounded worker pool, graceful shutdown _(50–100 asset load test against a real broker: still to do)_
+- [x] **3 State store** – `RWMutex`, race tests + benchmarks
+- [ ] **4 Broadcast hub / WebSocket** – snapshot on connect, then deltas
+- [ ] **5 Anomaly hook** – `AnomalyDetector` interface, threshold implementation sets `Status`
+- [ ] **6 Polish** – `/health`, `/metrics`, integration test (simulator + server in-process)
+- [ ] **7 Dashboard** – single HTML page over the WebSocket

@@ -1,0 +1,10 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/simulator ./cmd/simulator"
+  bin = "./tmp/simulator"
+  delay = 500
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "cmd/server"]
+  exclude_regex = ["_test.go"]
